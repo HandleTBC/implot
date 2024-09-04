@@ -22,6 +22,8 @@
 
 // ImPlot v0.17
 
+#include <tuple>
+
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include "implot.h"
 #include "implot_internal.h"
@@ -2494,6 +2496,238 @@ void PlotHeatmap(const char* label_id, const T* values, int rows, int cols, doub
     }
 }
 #define INSTANTIATE_MACRO(T) template IMPLOT_API void PlotHeatmap<T>(const char* label_id, const T* values, int rows, int cols, double scale_min, double scale_max, const char* fmt, const ImPlotPoint& bounds_min, const ImPlotPoint& bounds_max, ImPlotHeatmapFlags flags);
+CALL_INSTANTIATE_FOR_NUMERIC_TYPES()
+#undef INSTANTIATE_MACRO
+
+//-----------------------------------------------------------------------------
+// [SECTION] PlotSpectogram
+//-----------------------------------------------------------------------------
+
+template <typename T>
+struct GetterSpectogramRowMaj {
+    GetterSpectogramRowMaj(const T* values, int rows, int cols, double scale_min, double scale_max, double width, double height, double xref, double yref, double ydir) :
+        Values(values),
+        Count(rows*cols),
+        Rows(rows),
+        Cols(cols),
+        ScaleMin(scale_min),
+        ScaleMax(scale_max),
+        Width(width),
+        Height(height),
+        XRef(xref),
+        YRef(yref),
+        YDir(ydir),
+        HalfSize(Width*0.5, Height*0.5)
+    { }
+    template <typename I> IMPLOT_INLINE RectC operator()(I idx) const {
+        double val = (double)Values[idx];
+        const int r = idx / Cols;
+        const int c = idx % Cols;
+        const ImPlotPoint p(XRef + HalfSize.x + c*Width, YRef + YDir * (HalfSize.y + r*Height));
+        RectC rect;
+        rect.Pos = p;
+        rect.HalfSize = HalfSize;
+        const float t = ImClamp((float)ImRemap01(val, ScaleMin, ScaleMax),0.0f,1.0f);
+        ImPlotContext& gp = *GImPlot;
+        rect.Color = gp.ColormapData.LerpTable(gp.Style.Colormap, t);
+        return rect;
+    }
+    const T* const Values;
+    const int Count, Rows, Cols;
+    const double ScaleMin, ScaleMax, Width, Height, XRef, YRef, YDir;
+    const ImPlotPoint HalfSize;
+};
+
+template <typename T>
+struct GetterSpectogramColMaj {
+    GetterSpectogramColMaj(const T* values, int rows, int cols, double scale_min, double scale_max, double width, double height, double xref, double yref, double ydir) :
+        Values(values),
+        Count(rows*cols),
+        Rows(rows),
+        Cols(cols),
+        ScaleMin(scale_min),
+        ScaleMax(scale_max),
+        Width(width),
+        Height(height),
+        XRef(xref),
+        YRef(yref),
+        YDir(ydir),
+        HalfSize(Width*0.5, Height*0.5)
+    { }
+    template <typename I> IMPLOT_INLINE RectC operator()(I idx) const {
+        double val = (double)Values[idx];
+        const int r = idx % Rows;
+        const int c = idx / Rows;
+        const ImPlotPoint p(XRef + HalfSize.x + c*Width, YRef + YDir * (HalfSize.y + r*Height));
+        RectC rect;
+        rect.Pos = p;
+        rect.HalfSize = HalfSize;
+        const float t = ImClamp((float)ImRemap01(val, ScaleMin, ScaleMax),0.0f,1.0f);
+        ImPlotContext& gp = *GImPlot;
+        rect.Color = gp.ColormapData.LerpTable(gp.Style.Colormap, t);
+        return rect;
+    }
+    const T* const Values;
+    const int Count, Rows, Cols;
+    const double ScaleMin, ScaleMax, Width, Height, XRef, YRef, YDir;
+    const ImPlotPoint HalfSize;
+};
+
+template <typename T>
+struct GetterSpectogramRowMajLogarithmic {
+    GetterSpectogramRowMajLogarithmic(const T* values, int rows, int cols, double scale_min, double scale_max, double width, double height, double xref, double yref, double ydir) :
+        Values(values),
+        Count(rows*cols),
+        Rows(rows),
+        Cols(cols),
+        ScaleMin(scale_min),
+        ScaleMax(scale_max),
+        Width(width),
+        Height(height),
+        XRef(xref),
+        YRef(yref),
+        YDir(ydir),
+        HalfSize(Width*0.5, Height*0.5)
+    { }
+    template <typename I> IMPLOT_INLINE RectC operator()(I idx) const {
+        assert(YDir==-1);
+        assert(Rows>=2);
+        assert(Cols>=2);
+
+        double val = (double)Values[idx];
+        const int r = idx / Cols;
+        const int c = idx % Cols;
+        RectC rect;
+        rect.Pos.x = XRef + HalfSize.x + c*Width;
+        rect.HalfSize.x = Width*0.5;
+
+        // Set rectangle to be rendered position and halfsize according to logarithmic scale between min and max values
+        const double y_min_log = std::log10(YRef-Height*Rows);
+        const double y_max_log = std::log10(YRef);
+        auto linear_mean_and_half_size = [](const double min_log, const double max_log) {
+            const double min_linear = std::pow(10,min_log);
+            const double max_linear = std::pow(10,max_log);
+            const double mean_linear = 0.5*(min_linear+max_linear);
+            const double halfsize_linear = max_linear - mean_linear;
+            return std::pair<double,double>(mean_linear,halfsize_linear);
+        };
+        double y_upper_bound_log = 0;
+        double y_lower_bound_log = 0;
+        if (r == 0) {
+            // first
+            y_upper_bound_log = y_max_log;
+            y_lower_bound_log = y_min_log + (2*(Rows-1)-1)*(y_max_log-y_min_log)/(2*Rows-2);
+        } else if (r == Rows - 1) {
+            // last
+            y_upper_bound_log = y_min_log + (y_max_log-y_min_log)/(2*Rows-2);
+            y_lower_bound_log = y_min_log;
+        } else {
+            // Any intermediate point
+            const int pos_current = Rows-r-1;
+            y_upper_bound_log = y_min_log + (2*pos_current+1)*(y_max_log-y_min_log)/(2*Rows-2);
+            y_lower_bound_log = y_min_log + (2*pos_current-1)*(y_max_log-y_min_log)/(2*Rows-2);
+        }
+        std::tie(rect.Pos.y, rect.HalfSize.y) = linear_mean_and_half_size(y_lower_bound_log,y_upper_bound_log);
+
+        const float t = ImClamp((float)ImRemap01(val, ScaleMin, ScaleMax),0.0f,1.0f);
+        ImPlotContext& gp = *GImPlot;
+        rect.Color = gp.ColormapData.LerpTable(gp.Style.Colormap, t);
+        return rect;
+    }
+    const T* const Values;
+    const int Count, Rows, Cols;
+    const double ScaleMin, ScaleMax, Width, Height, XRef, YRef, YDir;
+    const ImPlotPoint HalfSize;
+};
+
+template <typename T>
+void RenderSpectogram(ImDrawList& draw_list, const T* values, int rows, int cols, double scale_min, double scale_max, const char* fmt, const ImPlotPoint& bounds_min, const ImPlotPoint& bounds_max, bool reverse_y, bool col_maj) {
+    ImPlotContext& gp = *GImPlot;
+    Transformer2 transformer;
+    if (scale_min == 0 && scale_max == 0) {
+        T temp_min, temp_max;
+        ImMinMaxArray(values,rows*cols,&temp_min,&temp_max);
+        scale_min = (double)temp_min;
+        scale_max = (double)temp_max;
+    }
+    if (scale_min == scale_max) {
+        ImVec2 a = transformer(bounds_min);
+        ImVec2 b = transformer(bounds_max);
+        ImU32  col = GetColormapColorU32(0,gp.Style.Colormap);
+        draw_list.AddRectFilled(a, b, col);
+        return;
+    }
+    const double yref = reverse_y ? bounds_max.y : bounds_min.y;
+    const double ydir = reverse_y ? -1 : 1;
+    if (col_maj) {
+        GetterSpectogramColMaj<T> getter(values, rows, cols, scale_min, scale_max, (bounds_max.x - bounds_min.x) / cols, (bounds_max.y - bounds_min.y) / rows, bounds_min.x, yref, ydir);
+        RenderPrimitives1<RendererRectC>(getter);
+    }
+    else {
+        // GetterSpectogramRowMaj<T> getter(values, rows, cols, scale_min, scale_max, (bounds_max.x - bounds_min.x) / cols, (bounds_max.y - bounds_min.y) / rows, bounds_min.x, yref, ydir);
+        // GetterSpectogramRowMajLogarithmic<T> getter(values, rows, cols, scale_min, scale_max, (bounds_max.x - bounds_min.x) / cols, (bounds_max.y - bounds_min.y) / rows, bounds_min.x, yref, ydir);
+        GetterSpectogramRowMajLogarithmic<T> getter(values, rows, cols, scale_min, scale_max, (bounds_max.x - bounds_min.x) / cols, (bounds_max.y - bounds_min.y) / rows, bounds_min.x, yref, ydir);
+        RenderPrimitives1<RendererRectC>(getter);
+    }
+    // labels
+    if (fmt != nullptr) {
+        const double w = (bounds_max.x - bounds_min.x) / cols;
+        const double h = (bounds_max.y - bounds_min.y) / rows;
+        const ImPlotPoint half_size(w*0.5,h*0.5);
+        int i = 0;
+        if (col_maj) {
+            for (int c = 0; c < cols; ++c) {
+                for (int r = 0; r < rows; ++r) {
+                    ImPlotPoint p;
+                    p.x = bounds_min.x + 0.5*w + c*w;
+                    p.y = yref + ydir * (0.5*h + r*h);
+                    ImVec2 px = transformer(p);
+                    char buff[32];
+                    ImFormatString(buff, 32, fmt, values[i]);
+                    ImVec2 size = ImGui::CalcTextSize(buff);
+                    double t = ImClamp(ImRemap01((double)values[i], scale_min, scale_max),0.0,1.0);
+                    ImVec4 color = SampleColormap((float)t);
+                    ImU32 col = CalcTextColor(color);
+                    draw_list.AddText(px - size * 0.5f, col, buff);
+                    i++;
+                }
+            }
+        }
+        else {
+            for (int r = 0; r < rows; ++r) {
+                for (int c = 0; c < cols; ++c) {
+                    ImPlotPoint p;
+                    p.x = bounds_min.x + 0.5*w + c*w;
+                    p.y = yref + ydir * (0.5*h + r*h);
+                    ImVec2 px = transformer(p);
+                    char buff[32];
+                    ImFormatString(buff, 32, fmt, values[i]);
+                    ImVec2 size = ImGui::CalcTextSize(buff);
+                    double t = ImClamp(ImRemap01((double)values[i], scale_min, scale_max),0.0,1.0);
+                    ImVec4 color = SampleColormap((float)t);
+                    ImU32 col = CalcTextColor(color);
+                    draw_list.AddText(px - size * 0.5f, col, buff);
+                    i++;
+                }
+            }
+        }
+    }
+}
+
+template <typename T>
+void PlotSpectogram(const char* label_id, const T* values, int rows, int cols, double scale_min, double scale_max, const char* fmt, const ImPlotPoint& bounds_min, const ImPlotPoint& bounds_max, ImPlotHeatmapFlags flags) {
+    if (BeginItemEx(label_id, FitterRect(bounds_min, bounds_max))) {
+        if (rows <= 0 || cols <= 0) {
+            EndItem();
+            return;
+        }
+        ImDrawList& draw_list = *GetPlotDrawList();
+        const bool col_maj = ImHasFlag(flags, ImPlotHeatmapFlags_ColMajor);
+        RenderSpectogram(draw_list, values, rows, cols, scale_min, scale_max, fmt, bounds_min, bounds_max, true, col_maj);
+        EndItem();
+    }
+}
+#define INSTANTIATE_MACRO(T) template IMPLOT_API void PlotSpectogram<T>(const char* label_id, const T* values, int rows, int cols, double scale_min, double scale_max, const char* fmt, const ImPlotPoint& bounds_min, const ImPlotPoint& bounds_max, ImPlotHeatmapFlags flags);
 CALL_INSTANTIATE_FOR_NUMERIC_TYPES()
 #undef INSTANTIATE_MACRO
 
